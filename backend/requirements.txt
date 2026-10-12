@@ -4,3 +4,4 @@ boto3==1.35.0
 python-multipart==0.0.9
 python-dotenv==1.0.1
 Pillow==10.4.0
+google-auth==2.55.2

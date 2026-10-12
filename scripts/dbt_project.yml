@@ -1,0 +1,6 @@
+# dbt_project.yml
+name: "spe_training_project"
+version: "1.0.0"
+
+dbt-cloud:
+    project-id: 70506183138564
