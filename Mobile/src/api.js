@@ -1,6 +1,6 @@
 import * as SecureStore from "expo-secure-store";
 
-const BASE_URL = "https://mazzterpieces.us-west-2.elasticbeanstalk.com";
+const BASE_URL = "https://mazz-backend.vercel.app";
 
 async function authHeaders() {
   const token = await SecureStore.getItemAsync("gid_token");
