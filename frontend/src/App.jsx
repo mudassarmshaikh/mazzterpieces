@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleLogin, googleLogout, useGoogleLogin } from "@react-oauth/google";
-import { deletePhoto, fetchLogins, fetchPhotos, importGooglePhotos, recordLogin, uploadPhoto } from "./api";
+import { addToAllowlist, deletePhoto, fetchAllowlist, fetchLogins, fetchPhotos, importGooglePhotos, recordLogin, removeFromAllowlist, uploadPhoto } from "./api";
 import "./App.css";
 
 const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
@@ -121,53 +121,142 @@ function NavRail({ photos, activeTab, onTabChange }) {
 }
 
 /* ── Admin panel ── */
-function AdminPanel() {
+function AdminPanel({ user }) {
+  const [adminTab, setAdminTab] = useState("logins");
   const [logins, setLogins] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loginsLoading, setLoginsLoading] = useState(true);
+  const [allowlist, setAllowlist] = useState({ restricted: false, emails: [], owner: "" });
+  const [accessLoading, setAccessLoading] = useState(true);
+  const [newEmail, setNewEmail] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetchLogins()
-      .then(setLogins)
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    fetchLogins().then(setLogins).catch(() => {}).finally(() => setLoginsLoading(false));
+    fetchAllowlist().then(setAllowlist).catch(() => {}).finally(() => setAccessLoading(false));
   }, []);
 
-  if (loading) return <div className="status-center"><div className="spinner" /><p>Loading…</p></div>;
+  const handleAdd = async () => {
+    const email = newEmail.trim().toLowerCase();
+    if (!email) return;
+    setSaving(true);
+    try {
+      const res = await addToAllowlist(email);
+      setAllowlist((a) => ({ ...a, restricted: true, emails: res.emails }));
+      setNewEmail("");
+    } catch (e) {
+      alert(e.response?.data?.detail ?? e.message);
+    } finally { setSaving(false); }
+  };
+
+  const handleRemove = async (email) => {
+    setSaving(true);
+    try {
+      const res = await removeFromAllowlist(email);
+      setAllowlist((a) => ({ ...a, emails: res.emails }));
+    } catch (e) {
+      alert(e.response?.data?.detail ?? e.message);
+    } finally { setSaving(false); }
+  };
+
+  const isOwner = user?.email === allowlist.owner;
 
   return (
     <div className="admin-panel">
-      <h2 className="admin-title">Login History</h2>
-      {logins.length === 0 ? (
-        <p className="admin-empty">No login events recorded yet.</p>
-      ) : (
-        <div className="admin-table-wrap">
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {logins.map((ev, i) => (
-                <tr key={i}>
-                  <td>
-                    {ev.picture
-                      ? <img src={ev.picture} alt={ev.name} className="admin-avatar" referrerPolicy="no-referrer" />
-                      : <div className="admin-avatar-fallback">{ev.name?.[0]?.toUpperCase()}</div>
-                    }
-                  </td>
-                  <td className="admin-name">{ev.name}</td>
-                  <td className="admin-email">{ev.email}</td>
-                  <td className="admin-time">
-                    {new Date(ev.timestamp).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="admin-tabs">
+        <button className={`admin-tab-btn ${adminTab === "logins" ? "active" : ""}`} onClick={() => setAdminTab("logins")}>
+          <Icon name="history" /> Login History
+        </button>
+        <button className={`admin-tab-btn ${adminTab === "access" ? "active" : ""}`} onClick={() => setAdminTab("access")}>
+          <Icon name="lock" /> Access Control
+        </button>
+      </div>
+
+      {adminTab === "logins" && (
+        <>
+          {loginsLoading
+            ? <div className="status-center"><div className="spinner" /></div>
+            : logins.length === 0
+              ? <p className="admin-empty">No login events recorded yet.</p>
+              : (
+                <div className="admin-table-wrap">
+                  <table className="admin-table">
+                    <thead><tr><th></th><th>Name</th><th>Email</th><th>Time</th></tr></thead>
+                    <tbody>
+                      {logins.map((ev, i) => (
+                        <tr key={i}>
+                          <td>{ev.picture
+                            ? <img src={ev.picture} alt={ev.name} className="admin-avatar" referrerPolicy="no-referrer" />
+                            : <div className="admin-avatar-fallback">{ev.name?.[0]?.toUpperCase()}</div>}
+                          </td>
+                          <td className="admin-name">{ev.name}</td>
+                          <td className="admin-email">{ev.email}</td>
+                          <td className="admin-time">{new Date(ev.timestamp).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+        </>
+      )}
+
+      {adminTab === "access" && (
+        <div className="access-panel">
+          <div className={`access-status ${allowlist.restricted ? "restricted" : "open"}`}>
+            <Icon name={allowlist.restricted ? "lock" : "lock_open"} />
+            {allowlist.restricted
+              ? `Restricted — only ${allowlist.emails.length} approved email${allowlist.emails.length !== 1 ? "s" : ""} can access`
+              : "Open — anyone with a Google account can access"}
+          </div>
+
+          {isOwner && (
+            <div className="access-add-row">
+              <input
+                className="access-input"
+                type="email"
+                placeholder="Add email address…"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              />
+              <button className="upload-btn" onClick={handleAdd} disabled={saving || !newEmail.trim()}>
+                <Icon name="add" /> Add
+              </button>
+            </div>
+          )}
+
+          {accessLoading
+            ? <div className="status-center"><div className="spinner" /></div>
+            : allowlist.emails.length === 0
+              ? <p className="admin-empty" style={{ marginTop: 12 }}>No emails added yet — app is open to all.</p>
+              : (
+                <div className="admin-table-wrap" style={{ marginTop: 12 }}>
+                  <table className="admin-table">
+                    <thead><tr><th>Email</th><th>Role</th>{isOwner && <th></th>}</tr></thead>
+                    <tbody>
+                      {allowlist.emails.map((email) => (
+                        <tr key={email}>
+                          <td className="admin-email" style={{ color: "var(--text-bright)" }}>{email}</td>
+                          <td>
+                            <span className={`access-role ${email === allowlist.owner ? "owner" : "user"}`}>
+                              {email === allowlist.owner ? "Owner" : "User"}
+                            </span>
+                          </td>
+                          {isOwner && (
+                            <td>
+                              {email !== allowlist.owner && (
+                                <button className="access-remove-btn" onClick={() => handleRemove(email)} disabled={saving}>
+                                  <Icon name="delete" />
+                                </button>
+                              )}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
         </div>
       )}
     </div>
@@ -528,7 +617,7 @@ export default function App() {
         <NavRail photos={photos} activeTab={activeTab} onTabChange={setActiveTab} />
 
         {activeTab === "admin" && (
-          <main className="grid-area"><AdminPanel /></main>
+          <main className="grid-area"><AdminPanel user={user} /></main>
         )}
         <main
           className={`grid-area ${dragOver ? "drag-over" : ""}`}

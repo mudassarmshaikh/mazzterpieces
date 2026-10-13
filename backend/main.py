@@ -1,8 +1,9 @@
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 import requests as http_requests
 
@@ -33,6 +34,42 @@ app.add_middleware(
 AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
 BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "cloudpix-photos")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+OWNER_EMAIL = os.getenv("OWNER_EMAIL", "")
+
+ALLOWLIST_KEY = "admin/allowlist.json"
+_allowlist_cache: Optional[List[str]] = None   # None = not yet loaded
+_allowlist_cache_time: float = 0
+_ALLOWLIST_TTL = 60  # seconds
+
+
+def _read_allowlist() -> Optional[List[str]]:
+    """Returns None (open access) if the file doesn't exist, or a list of allowed emails."""
+    global _allowlist_cache, _allowlist_cache_time
+    now = time.time()
+    if _allowlist_cache_time and now - _allowlist_cache_time < _ALLOWLIST_TTL:
+        return _allowlist_cache
+    try:
+        body = s3.get_object(Bucket=BUCKET_NAME, Key=ALLOWLIST_KEY)["Body"].read()
+        _allowlist_cache = json.loads(body)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            _allowlist_cache = None  # file absent = open access
+        else:
+            return _allowlist_cache  # S3 error — keep stale cache
+    _allowlist_cache_time = now
+    return _allowlist_cache
+
+
+def _write_allowlist(emails: List[str]) -> None:
+    global _allowlist_cache, _allowlist_cache_time
+    s3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=ALLOWLIST_KEY,
+        Body=json.dumps(sorted(set(emails))),
+        ContentType="application/json",
+    )
+    _allowlist_cache = sorted(set(emails))
+    _allowlist_cache_time = time.time()
 
 s3 = boto3.client(
     "s3",
@@ -86,12 +123,18 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
         )
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
-    return UserInfo(
+    user = UserInfo(
         sub=info["sub"],
         email=info["email"],
         name=info.get("name", ""),
         picture=info.get("picture", ""),
     )
+    # Allowlist check: owner always passes; others blocked if list exists and they're not on it
+    if user.email != OWNER_EMAIL:
+        allowlist = _read_allowlist()
+        if allowlist is not None and user.email not in allowlist:
+            raise HTTPException(status_code=403, detail="Access denied. You are not on the access list.")
+    return user
 
 
 @app.get("/auth/me", response_model=UserInfo)
@@ -142,6 +185,38 @@ def list_logins(user: UserInfo = Depends(verify_token)):
             continue
 
     return sorted(events, key=lambda e: e.timestamp, reverse=True)
+
+
+@app.get("/admin/allowlist")
+def get_allowlist(user: UserInfo = Depends(verify_token)):
+    allowlist = _read_allowlist()
+    return {
+        "restricted": allowlist is not None,
+        "emails": allowlist or [],
+        "owner": OWNER_EMAIL,
+    }
+
+
+@app.post("/admin/allowlist/{email:path}")
+def add_to_allowlist(email: str, user: UserInfo = Depends(verify_token)):
+    if user.email != OWNER_EMAIL:
+        raise HTTPException(status_code=403, detail="Only the owner can manage access.")
+    emails = list(_read_allowlist() or [])
+    if email not in emails:
+        emails.append(email)
+    _write_allowlist(emails)
+    return {"emails": sorted(set(emails))}
+
+
+@app.delete("/admin/allowlist/{email:path}")
+def remove_from_allowlist(email: str, user: UserInfo = Depends(verify_token)):
+    if user.email != OWNER_EMAIL:
+        raise HTTPException(status_code=403, detail="Only the owner can manage access.")
+    if email == OWNER_EMAIL:
+        raise HTTPException(status_code=400, detail="Cannot remove the owner.")
+    emails = [e for e in (_read_allowlist() or []) if e != email]
+    _write_allowlist(emails)
+    return {"emails": emails}
 
 
 @app.get("/photos", response_model=List[PhotoItem])

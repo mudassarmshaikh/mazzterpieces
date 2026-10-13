@@ -30,3 +30,7 @@ export const fetchLogins = () => api.get("/admin/logins").then((r) => r.data);
 
 export const importGooglePhotos = (items) =>
   api.post("/google-photos/import", items).then((r) => r.data);
+
+export const fetchAllowlist = () => api.get("/admin/allowlist").then((r) => r.data);
+export const addToAllowlist = (email) => api.post(`/admin/allowlist/${encodeURIComponent(email)}`).then((r) => r.data);
+export const removeFromAllowlist = (email) => api.delete(`/admin/allowlist/${encodeURIComponent(email)}`).then((r) => r.data);
