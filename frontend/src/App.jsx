@@ -37,8 +37,8 @@ function LoginScreen({ onSuccess }) {
     <div className="login-screen">
       <div className="login-card">
         <div className="login-logo">
-          <img src="/logo.png" alt="MAZZ-terpieces" className="logo-img" />
-          <span className="logo-text">MAZZ-terpieces</span>
+          <img src="/logo.png" alt="MAZZterpix" className="logo-img" />
+          <span className="logo-text">MAZZterpix</span>
         </div>
         <p className="login-tagline">Your personal media vault — sign in to continue.</p>
         <div className="login-divider" />
@@ -207,6 +207,18 @@ function UserMenu({ user, onSignOut }) {
   );
 }
 
+/* ── Google Photos logo icon ── */
+function GooglePhotosLogo({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 192 192" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#FBBC04" d="M96 12a36 36 0 0 0-36 36v48h48V48a36 36 0 0 0-12-36z"/>
+      <path fill="#4285F4" d="M180 96a36 36 0 0 0-36-36H96v48h48a36 36 0 0 0 36-12z"/>
+      <path fill="#34A853" d="M96 180a36 36 0 0 0 36-36v-48H84v48a36 36 0 0 0 12 36z"/>
+      <path fill="#EA4335" d="M12 96a36 36 0 0 0 36 36h48V84H48a36 36 0 0 0-36 12z"/>
+    </svg>
+  );
+}
+
 /* ── Google Photos Picker import ── */
 const PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
 const PICKER_API = "https://photospicker.googleapis.com/v1";
@@ -311,9 +323,9 @@ function GooglePhotosImport({ onImportDone }) {
   useEffect(() => () => clearInterval(pollRef.current), []);
 
   const label =
-    phase === "picking" ? "Waiting…" :
-    phase === "importing" ? `${progress.done}/${progress.total}` :
-    "Google Photos";
+    phase === "picking" ? "Waiting for selection…" :
+    phase === "importing" ? `Importing ${progress.done}/${progress.total}…` :
+    "Import from Google Photos";
 
   return (
     <button
@@ -322,7 +334,7 @@ function GooglePhotosImport({ onImportDone }) {
       disabled={phase !== "idle"}
       title="Import from Google Photos"
     >
-      <Icon name="photo_library" />
+      <GooglePhotosLogo size={17} />
       {label}
     </button>
   );
@@ -453,8 +465,8 @@ export default function App() {
       {/* Top app bar */}
       <header className="topbar">
         <div className="topbar-logo">
-          <img src="/logo.png" alt="MAZZ-terpieces" className="logo-img" />
-          <span className="logo-text">MAZZ-terpieces</span>
+          <img src="/logo.png" alt="MAZZterpix" className="logo-img" />
+          <span className="logo-text">MAZZterpix</span>
         </div>
 
         <div className="search-wrap">
