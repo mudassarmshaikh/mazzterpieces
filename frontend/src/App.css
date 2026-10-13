@@ -66,13 +66,12 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; line-height
 
 .topbar-logo { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 
-.logo-icon {
+.logo-img {
   width: 36px; height: 36px;
-  border-radius: 10px;
-  background: var(--bg);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px; color: var(--accent);
-  box-shadow: var(--neu-raised);
+  border-radius: 8px;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(2px 2px 4px rgba(163,177,198,0.5));
 }
 
 .logo-text {

@@ -37,7 +37,7 @@ function LoginScreen({ onSuccess }) {
     <div className="login-screen">
       <div className="login-card">
         <div className="login-logo">
-          <div className="logo-icon"><Icon name="cloud" /></div>
+          <img src="/logo.png" alt="MAZZ-terpieces" className="logo-img" />
           <span className="logo-text">MAZZ-terpieces</span>
         </div>
         <p className="login-tagline">Your personal media vault — sign in to continue.</p>
@@ -240,7 +240,7 @@ export default function App() {
       {/* Top app bar */}
       <header className="topbar">
         <div className="topbar-logo">
-          <div className="logo-icon"><Icon name="cloud" /></div>
+          <img src="/logo.png" alt="MAZZ-terpieces" className="logo-img" />
           <span className="logo-text">MAZZ-terpieces</span>
         </div>
 
