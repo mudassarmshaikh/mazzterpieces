@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GoogleLogin, googleLogout } from "@react-oauth/google";
-import { deletePhoto, fetchPhotos, uploadPhoto } from "./api";
+import { GoogleLogin, googleLogout, useGoogleLogin } from "@react-oauth/google";
+import { deletePhoto, fetchLogins, fetchPhotos, importGooglePhotos, recordLogin, uploadPhoto } from "./api";
 import "./App.css";
 
 const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
@@ -60,27 +60,117 @@ function LoginScreen({ onSuccess }) {
   );
 }
 
+function fmtBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+const BAR_COLORS = ["#7c6cf8","#f87171","#34d399","#fbbf24","#60a5fa","#f472b6","#a78bfa"];
+
 /* ── Nav rail ── */
-function NavRail({ totalSizeKB }) {
-  const totalMB = (totalSizeKB / 1024).toFixed(1);
-  const pct = Math.min((totalSizeKB / (500 * 1024)) * 100, 100).toFixed(1);
+function NavRail({ photos, activeTab, onTabChange }) {
+  const items = [
+    { id: "photos", icon: "photo_library", label: "Photos" },
+    { id: "admin", icon: "admin_panel_settings", label: "Admin" },
+  ];
+
+  // Aggregate bytes per user
+  const byUser = {};
+  for (const p of photos) {
+    byUser[p.uploaded_by] = (byUser[p.uploaded_by] ?? 0) + (p.size ?? 0);
+  }
+  const users = Object.entries(byUser).sort((a, b) => b[1] - a[1]);
+  const maxLog = users.length ? Math.log10(users[0][1] + 1) : 1;
+
   return (
     <aside className="nav-rail">
       <nav className="rail-nav">
-        <a className="rail-item active" href="#"><Icon name="photo_library" /><span>Photos</span></a>
-        <a className="rail-item" href="#"><Icon name="auto_awesome" /><span>Explore</span></a>
-        <a className="rail-item" href="#"><Icon name="photo_album" /><span>Albums</span></a>
-        <a className="rail-item" href="#"><Icon name="share" /><span>Sharing</span></a>
-        <a className="rail-item" href="#"><Icon name="favorite" /><span>Favorites</span></a>
-        <a className="rail-item" href="#"><Icon name="delete" /><span>Trash</span></a>
+        {items.map(({ id, icon, label }) => (
+          <button
+            key={id}
+            className={`rail-item ${activeTab === id ? "active" : ""}`}
+            onClick={() => onTabChange(id)}
+          >
+            <Icon name={icon} /><span>{label}</span>
+          </button>
+        ))}
       </nav>
       <div className="rail-storage">
-        <div className="storage-bar-track">
-          <div className="storage-bar-fill" style={{ width: `${pct}%` }} />
-        </div>
-        <p className="storage-detail"><strong>{totalMB} MB</strong> of 500 MB</p>
+        <p className="storage-label">Storage by user</p>
+        {users.length === 0 && <p className="storage-detail" style={{ marginTop: 6 }}>No data</p>}
+        {users.map(([name, bytes], i) => {
+          const logPct = maxLog > 0 ? (Math.log10(bytes + 1) / maxLog) * 100 : 0;
+          const color = BAR_COLORS[i % BAR_COLORS.length];
+          return (
+            <div key={name} className="storage-user-row">
+              <div className="storage-user-header">
+                <span className="storage-user-name" title={name}>{name}</span>
+                <span className="storage-user-size">{fmtBytes(bytes)}</span>
+              </div>
+              <div className="storage-bar-track">
+                <div className="storage-bar-fill" style={{ width: `${logPct}%`, background: color }} />
+              </div>
+            </div>
+          );
+        })}
       </div>
     </aside>
+  );
+}
+
+/* ── Admin panel ── */
+function AdminPanel() {
+  const [logins, setLogins] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchLogins()
+      .then(setLogins)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="status-center"><div className="spinner" /><p>Loading…</p></div>;
+
+  return (
+    <div className="admin-panel">
+      <h2 className="admin-title">Login History</h2>
+      {logins.length === 0 ? (
+        <p className="admin-empty">No login events recorded yet.</p>
+      ) : (
+        <div className="admin-table-wrap">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logins.map((ev, i) => (
+                <tr key={i}>
+                  <td>
+                    {ev.picture
+                      ? <img src={ev.picture} alt={ev.name} className="admin-avatar" referrerPolicy="no-referrer" />
+                      : <div className="admin-avatar-fallback">{ev.name?.[0]?.toUpperCase()}</div>
+                    }
+                  </td>
+                  <td className="admin-name">{ev.name}</td>
+                  <td className="admin-email">{ev.email}</td>
+                  <td className="admin-time">
+                    {new Date(ev.timestamp).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -114,6 +204,127 @@ function UserMenu({ user, onSignOut }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Google Photos Picker import ── */
+const PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
+const PICKER_API = "https://photospicker.googleapis.com/v1";
+
+function GooglePhotosImport({ onImportDone }) {
+  const [phase, setPhase] = useState("idle"); // idle | picking | importing
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const pollRef = useRef(null);
+
+  const startSession = async (accessToken) => {
+    setPhase("picking");
+    // Open blank popup synchronously before any async work — browsers block
+    // popups opened from async callbacks, but allow navigating an already-open one.
+    const popup = window.open("", "gpicker", "width=900,height=650");
+    try {
+      // 1. Create picker session
+      const sessionRes = await fetch(`${PICKER_API}/sessions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const session = await sessionRes.json();
+      console.log("Picker session response:", session);
+
+      if (!session.pickerUri) {
+        popup?.close();
+        alert(`Google Photos Picker error: ${JSON.stringify(session)}\n\nMake sure the "Photos Picker API" is enabled in Google Cloud Console.`);
+        setPhase("idle");
+        return;
+      }
+
+      // 2. Navigate the already-open popup to the picker URL
+      popup.location.href = session.pickerUri;
+
+      // 3. Poll until user finishes selecting
+      pollRef.current = setInterval(async () => {
+        try {
+          const pollRes = await fetch(`${PICKER_API}/sessions/${session.id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          const updated = await pollRes.json();
+          if (updated.mediaItemsSet) {
+            clearInterval(pollRef.current);
+            popup?.close();
+
+            // 4. Fetch selected items
+            const itemsRes = await fetch(`${PICKER_API}/mediaItems?sessionId=${session.id}`, {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            const itemsBody = await itemsRes.json();
+            console.log("Picker mediaItems response:", itemsBody);
+            const mediaItems = itemsBody.mediaItems ?? [];
+
+            if (!mediaItems.length) {
+              alert("No photos were selected.");
+              setPhase("idle");
+              return;
+            }
+
+            // 5. Send to backend for S3 upload
+            setPhase("importing");
+            setProgress({ done: 0, total: mediaItems.length });
+
+            const payload = mediaItems.map((item) => {
+              const mf = item.mediaFile ?? item;
+              return {
+                url: (mf.baseUrl ?? mf.url) + "=d",
+                filename: mf.filename ?? `import_${item.id}.jpg`,
+                mimeType: mf.mimeType ?? "image/jpeg",
+                access_token: accessToken,
+              };
+            });
+            console.log("Import payload:", payload);
+
+            try {
+              for (let i = 0; i < payload.length; i += 5) {
+                const result = await importGooglePhotos(payload.slice(i, i + 5));
+                console.log("Import result:", JSON.stringify(result));
+                setProgress({ done: Math.min(i + 5, payload.length), total: payload.length });
+              }
+              setPhase("idle");
+              onImportDone();
+            } catch (err) {
+              console.error("Import failed:", err);
+              alert(`Import failed: ${err.response?.data?.detail ?? err.message}`);
+              setPhase("idle");
+            }
+          }
+        } catch { /* keep polling */ }
+      }, 2500);
+    } catch {
+      setPhase("idle");
+    }
+  };
+
+  const login = useGoogleLogin({
+    scope: PICKER_SCOPE,
+    onSuccess: (tok) => startSession(tok.access_token),
+    onError: () => setPhase("idle"),
+  });
+
+  useEffect(() => () => clearInterval(pollRef.current), []);
+
+  const label =
+    phase === "picking" ? "Waiting…" :
+    phase === "importing" ? `${progress.done}/${progress.total}` :
+    "Google Photos";
+
+  return (
+    <button
+      className="upload-btn gphotos-btn"
+      onClick={() => { if (phase === "idle") login(); }}
+      disabled={phase !== "idle"}
+      title="Import from Google Photos"
+    >
+      <Icon name="photo_library" />
+      {label}
+    </button>
   );
 }
 
@@ -158,6 +369,7 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("grid");
+  const [activeTab, setActiveTab] = useState("photos");
   const fileRef = useRef();
 
   /* ── Auth ── */
@@ -174,6 +386,7 @@ export default function App() {
     localStorage.setItem("gid_token", token);
     localStorage.setItem("gid_user", JSON.stringify(userInfo));
     setUser(userInfo);
+    recordLogin().catch(() => {});
   };
 
   const handleSignOut = () => {
@@ -223,7 +436,7 @@ export default function App() {
     loadPhotos();
   };
 
-  const totalSizeKB = photos.reduce((sum, p) => sum + (p.size || 0) / 1024, 0);
+
   const filtered = photos.filter((p) =>
     p.filename.toLowerCase().includes(search.toLowerCase())
   );
@@ -277,6 +490,7 @@ export default function App() {
               <Icon name="view_list" />
             </button>
           </div>
+          <GooglePhotosImport onImportDone={loadPhotos} />
           <button
             className="upload-btn"
             onClick={() => fileRef.current.click()}
@@ -299,10 +513,14 @@ export default function App() {
       </header>
 
       <div className="body-row">
-        <NavRail totalSizeKB={totalSizeKB} />
+        <NavRail photos={photos} activeTab={activeTab} onTabChange={setActiveTab} />
 
+        {activeTab === "admin" && (
+          <main className="grid-area"><AdminPanel /></main>
+        )}
         <main
           className={`grid-area ${dragOver ? "drag-over" : ""}`}
+          style={activeTab !== "photos" ? { display: "none" } : {}}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}

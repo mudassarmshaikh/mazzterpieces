@@ -23,3 +23,10 @@ export const uploadPhoto = (file, onProgress) => {
 };
 
 export const deletePhoto = (key) => api.delete(`/photos/${key}`);
+
+export const recordLogin = () => api.post("/auth/login");
+
+export const fetchLogins = () => api.get("/admin/logins").then((r) => r.data);
+
+export const importGooglePhotos = (items) =>
+  api.post("/google-photos/import", items).then((r) => r.data);
