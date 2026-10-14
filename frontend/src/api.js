@@ -24,6 +24,11 @@ export const uploadPhoto = (file, onProgress) => {
 
 export const deletePhoto = (key) => api.delete(`/photos/${key}`);
 
+export const getDownloadUrl = (key) => api.get(`/download/${key}`).then((r) => r.data.url);
+
+export const fetchTrash = () => api.get("/trash").then((r) => r.data);
+export const permanentlyDelete = (key) => api.delete(`/trash/${key}`);
+
 export const recordLogin = () => api.post("/auth/login");
 
 export const fetchLogins = () => api.get("/admin/logins").then((r) => r.data);

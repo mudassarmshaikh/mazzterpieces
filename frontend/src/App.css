@@ -177,6 +177,10 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; line-height
 .rail-item:hover { color: var(--text); box-shadow: var(--neu-raised); }
 .rail-item.active { box-shadow: var(--neu-pressed); color: var(--accent); }
 .rail-item.active .material-symbols-rounded { font-variation-settings: 'FILL' 1,'wght' 400,'GRAD' 0,'opsz' 24; }
+.rail-item-trash:hover { color: var(--danger) !important; }
+.rail-item-trash.active { color: var(--danger) !important; }
+.rail-spacer { flex: 1; }
+.trash-hint { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--text-dim); margin-bottom: 16px; }
 
 /* Storage */
 .rail-storage { padding: 12px 12px 4px; border-top: 1px solid rgba(163,177,198,0.25); margin-top: 12px; }
@@ -235,6 +239,18 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; line-height
 .card-overlay { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end; padding: 8px; background: linear-gradient(160deg, rgba(0,0,0,0.18) 0%, transparent 45%); opacity: 0; transition: opacity 0.15s; border-radius: 16px; }
 .photo-card:hover .card-overlay { opacity: 1; }
 
+/* Multi-select */
+.photo-card.selected { outline: 3px solid var(--accent); outline-offset: 2px; }
+.photo-list-row.selected { background: var(--accent-glow); border-radius: var(--radius-sm); }
+.card-select-overlay { position: absolute; inset: 0; border-radius: 16px; background: rgba(124,108,248,0.12); display: flex; align-items: flex-start; justify-content: flex-start; padding: 8px; }
+.select-check { width: 24px; height: 24px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); background: rgba(0,0,0,0.25); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; transition: background 0.15s, border-color 0.15s; flex-shrink: 0; }
+.select-check.checked { background: var(--accent); border-color: var(--accent); }
+.bulk-action-bar { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-radius: 50px; box-shadow: var(--neu-raised-lg); border: 1px solid var(--border-bright); }
+.bulk-count { font-size: 14px; font-weight: 600; color: var(--text-bright); white-space: nowrap; }
+.bulk-actions { display: flex; gap: 10px; }
+.bulk-select-all { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 50px; border: 1.5px solid var(--border-bright); background: transparent; color: var(--text); font-size: 13px; cursor: pointer; transition: background 0.15s; }
+.bulk-select-all:hover { background: var(--surface-2); }
+
 .delete-btn {
   background: rgba(224,229,236,0.88);
   color: var(--text); border: none; border-radius: 8px;
@@ -267,6 +283,8 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; line-height
 .lightbox-inner { position: relative; max-width: min(90vw, 1100px); max-height: 94vh; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .lightbox-inner > img { max-width: 100%; max-height: calc(94vh - 90px); border-radius: var(--radius); object-fit: contain; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
 .lightbox-video { max-width: 100%; max-height: calc(94vh - 90px); border-radius: var(--radius); background: #000; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+.video-unsupported { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 48px 32px; background: rgba(0,0,0,0.4); border-radius: var(--radius); color: rgba(255,255,255,0.8); text-align: center; }
+.video-unsupported-icon { font-size: 52px; opacity: 0.5; }
 
 .lightbox-close { position: absolute; top: -14px; right: -14px; background: var(--btn); border: none; color: var(--btn-text); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 10; box-shadow: 0 2px 8px var(--btn-glow); transition: background var(--t); }
 .lightbox-close:hover { background: var(--btn-hover); }
@@ -401,6 +419,13 @@ body { background: var(--bg); color: var(--text); min-height: 100vh; line-height
 .access-role.user { background: rgba(163,177,198,0.2); color: var(--text-dim); }
 .access-remove-btn { background: var(--bg); border: none; color: var(--text-dim); cursor: pointer; border-radius: 8px; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: var(--neu-raised); transition: box-shadow var(--t), color var(--t); }
 .access-remove-btn:hover { box-shadow: var(--neu-pressed); color: var(--danger); }
+
+/* ── Media filter bar ── */
+.media-filter-bar { display: flex; gap: 8px; margin-bottom: 20px; }
+.media-filter-btn { display: flex; align-items: center; gap: 6px; background: var(--bg); border: none; border-radius: 999px; padding: 7px 16px; font-size: 0.84rem; font-weight: 500; color: var(--text-dim); cursor: pointer; font-family: inherit; box-shadow: var(--neu-raised); transition: box-shadow var(--t), color var(--t); }
+.media-filter-btn:hover { color: var(--text); }
+.media-filter-btn.active { box-shadow: var(--neu-pressed); color: var(--accent); }
+.media-filter-btn .material-symbols-rounded { font-size: 17px; }
 
 /* ── Responsive ── */
 @media (max-width: 768px) {

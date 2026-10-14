@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleLogin, googleLogout, useGoogleLogin } from "@react-oauth/google";
-import { addToAllowlist, deletePhoto, fetchAllowlist, fetchLogins, fetchPhotos, importGooglePhotos, recordLogin, removeFromAllowlist, uploadPhoto } from "./api";
+import { addToAllowlist, deletePhoto, fetchAllowlist, fetchLogins, fetchPhotos, fetchTrash, getDownloadUrl, importGooglePhotos, permanentlyDelete, recordLogin, removeFromAllowlist, uploadPhoto } from "./api";
 import "./App.css";
 
 const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
@@ -71,8 +71,8 @@ const BAR_COLORS = ["#7c6cf8","#f87171","#34d399","#fbbf24","#60a5fa","#f472b6",
 
 /* ── Nav rail ── */
 function NavRail({ photos, activeTab, onTabChange }) {
-  const items = [
-    { id: "photos", icon: "photo_library", label: "Photos" },
+  const topItems = [
+    { id: "photos", icon: "perm_media", label: "Media" },
     { id: "admin", icon: "admin_panel_settings", label: "Admin" },
   ];
 
@@ -87,7 +87,7 @@ function NavRail({ photos, activeTab, onTabChange }) {
   return (
     <aside className="nav-rail">
       <nav className="rail-nav">
-        {items.map(({ id, icon, label }) => (
+        {topItems.map(({ id, icon, label }) => (
           <button
             key={id}
             className={`rail-item ${activeTab === id ? "active" : ""}`}
@@ -96,6 +96,13 @@ function NavRail({ photos, activeTab, onTabChange }) {
             <Icon name={icon} /><span>{label}</span>
           </button>
         ))}
+        <div className="rail-spacer" />
+        <button
+          className={`rail-item rail-item-trash ${activeTab === "trash" ? "active" : ""}`}
+          onClick={() => onTabChange("trash")}
+        >
+          <Icon name="delete" /><span>Recycle Bin</span>
+        </button>
       </nav>
       <div className="rail-storage">
         <p className="storage-label">Storage by user</p>
@@ -312,7 +319,7 @@ function GooglePhotosLogo({ size = 18 }) {
 const PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly";
 const PICKER_API = "https://photospicker.googleapis.com/v1";
 
-function GooglePhotosImport({ onImportDone }) {
+function GooglePhotosImport({ onImportDone, existingFilenames }) {
   const [phase, setPhase] = useState("idle"); // idle | picking | importing
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const pollRef = useRef(null);
@@ -353,13 +360,20 @@ function GooglePhotosImport({ onImportDone }) {
             clearInterval(pollRef.current);
             popup?.close();
 
-            // 4. Fetch selected items
-            const itemsRes = await fetch(`${PICKER_API}/mediaItems?sessionId=${session.id}`, {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
-            const itemsBody = await itemsRes.json();
-            console.log("Picker mediaItems response:", itemsBody);
-            const mediaItems = itemsBody.mediaItems ?? [];
+            // 4. Fetch all selected items (paginated)
+            const mediaItems = [];
+            let pageToken = undefined;
+            do {
+              const qs = new URLSearchParams({ sessionId: session.id, pageSize: "100" });
+              if (pageToken) qs.set("pageToken", pageToken);
+              const itemsRes = await fetch(`${PICKER_API}/mediaItems?${qs}`, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+              });
+              const itemsBody = await itemsRes.json();
+              console.log(`Picker page: ${(itemsBody.mediaItems ?? []).length} items, nextPageToken=${itemsBody.nextPageToken ?? "none"}`);
+              mediaItems.push(...(itemsBody.mediaItems ?? []));
+              pageToken = itemsBody.nextPageToken;
+            } while (pageToken);
 
             if (!mediaItems.length) {
               alert("No photos were selected.");
@@ -367,11 +381,8 @@ function GooglePhotosImport({ onImportDone }) {
               return;
             }
 
-            // 5. Send to backend for S3 upload
-            setPhase("importing");
-            setProgress({ done: 0, total: mediaItems.length });
-
-            const payload = mediaItems.map((item) => {
+            // 5. Send to backend for S3 upload (skip already-uploaded filenames)
+            const allPayload = mediaItems.map((item) => {
               const mf = item.mediaFile ?? item;
               return {
                 url: (mf.baseUrl ?? mf.url) + "=d",
@@ -380,7 +391,18 @@ function GooglePhotosImport({ onImportDone }) {
                 access_token: accessToken,
               };
             });
-            console.log("Import payload:", payload);
+            const payload = allPayload.filter((item) => !existingFilenames.has(item.filename));
+            const skippedDupes = allPayload.length - payload.length;
+            console.log(`Import: ${payload.length} new, ${skippedDupes} already uploaded`);
+
+            if (!payload.length) {
+              alert(`All ${allPayload.length} selected files are already in your library.`);
+              setPhase("idle");
+              return;
+            }
+
+            setPhase("importing");
+            setProgress({ done: 0, total: payload.length });
 
             try {
               for (let i = 0; i < payload.length; i += 5) {
@@ -429,28 +451,146 @@ function GooglePhotosImport({ onImportDone }) {
   );
 }
 
+/* ── Lightbox video with codec-error fallback ── */
+function LightboxVideo({ src, filename, videoKey }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const url = await getDownloadUrl(videoKey);
+      const a = document.createElement("a");
+      a.href = url;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch { alert("Download failed."); }
+    finally { setDownloading(false); }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+      <video
+        src={src}
+        controls
+        autoPlay
+        muted
+        className="lightbox-video"
+        onError={(e) => {
+          const err = e.target.error;
+          console.error("Video error code:", err?.code, "| message:", err?.message, "| src:", src.slice(0, 80));
+        }}
+      />
+      <button className="upload-btn" style={{ opacity: 0.8, fontSize: 13 }} onClick={handleDownload} disabled={downloading}>
+        <Icon name="download" /> {downloading ? "Downloading…" : "Download"}
+      </button>
+    </div>
+  );
+}
+
 /* ── Delete modal ── */
-function DeleteModal({ photo, onConfirm, onCancel }) {
+function DeleteModal({ photo, onConfirm, onCancel, permanent = false }) {
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-icon-wrap">
-          <Icon name="delete_forever" className="modal-icon" />
+          <Icon name={permanent ? "delete_forever" : "delete"} className="modal-icon" />
         </div>
-        <p className="modal-title">Delete this item?</p>
+        <p className="modal-title">{permanent ? "Delete forever?" : "Move to Recycle Bin?"}</p>
         <img className="modal-thumb" src={photo.url} alt={photo.filename} />
         <p className="modal-filename">{photo.filename}</p>
         <p className="modal-warning">
           <Icon name="warning" className="warning-icon" />
-          This will permanently remove it from S3 and cannot be undone.
+          {permanent
+            ? "This will permanently remove it from storage and cannot be undone."
+            : "This item will be moved to the Recycle Bin. You can permanently delete it from there."}
         </p>
         <div className="modal-actions">
           <button className="modal-cancel" onClick={onCancel}>Cancel</button>
           <button className="modal-confirm" onClick={onConfirm}>
-            <Icon name="delete" /> Delete
+            <Icon name={permanent ? "delete_forever" : "delete"} />
+            {permanent ? "Delete Forever" : "Move to Bin"}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Recycle Bin ── */
+function RecycleBin() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [pendingPermDelete, setPendingPermDelete] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setItems(await fetchTrash()); } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const confirmPermDelete = async () => {
+    await permanentlyDelete(pendingPermDelete.key);
+    setPendingPermDelete(null);
+    load();
+  };
+
+  if (loading) return <div className="status-center"><div className="spinner" /><p>Loading…</p></div>;
+
+  return (
+    <div>
+      {items.length === 0 ? (
+        <div className="empty">
+          <div className="empty-icon-wrap"><Icon name="delete" className="empty-icon" /></div>
+          <p className="empty-title">Recycle Bin is empty</p>
+          <p className="empty-sub">Items you remove from Media will appear here before being permanently deleted.</p>
+        </div>
+      ) : (
+        <>
+          <p className="trash-hint"><Icon name="info" style={{ fontSize: 15, verticalAlign: "middle" }} /> Items here are not permanently deleted yet.</p>
+          <div className="photo-list">
+            {items.map((p) => (
+              <div key={p.key} className="photo-list-row">
+                <div className="list-thumb-wrap">
+                  {isVideo(p.filename)
+                    ? <video src={p.url} muted playsInline preload="metadata" className="list-thumb" />
+                    : <img src={p.url} alt={p.filename} className="list-thumb" loading="lazy" />}
+                  {isVideo(p.filename) && <Icon name="play_circle" className="list-video-badge" />}
+                </div>
+                <div className="list-info">
+                  <p className="list-filename">{p.filename}</p>
+                  <p className="list-meta">
+                    <Icon name="person" className="list-meta-icon" />{p.uploaded_by}
+                    <span className="list-dot">·</span>
+                    <Icon name="schedule" className="list-meta-icon" />
+                    {new Date(p.last_modified).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
+                    <span className="list-dot">·</span>
+                    {(p.size / 1024).toFixed(1)} KB
+                  </p>
+                </div>
+                <button
+                  className="delete-btn list-delete-btn"
+                  style={{ opacity: 1 }}
+                  onClick={() => setPendingPermDelete(p)}
+                  title="Delete permanently"
+                >
+                  <Icon name="delete_forever" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      {pendingPermDelete && (
+        <DeleteModal
+          photo={pendingPermDelete}
+          permanent
+          onConfirm={confirmPermDelete}
+          onCancel={() => setPendingPermDelete(null)}
+        />
+      )}
     </div>
   );
 }
@@ -471,7 +611,29 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [viewMode, setViewMode] = useState("grid");
   const [activeTab, setActiveTab] = useState("photos");
+  const [mediaFilter, setMediaFilter] = useState("all"); // "all" | "photos" | "videos"
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState(new Set());
   const fileRef = useRef();
+
+  const toggleSelectMode = () => {
+    setSelectMode((s) => !s);
+    setSelectedKeys(new Set());
+  };
+
+  const toggleKey = (key) =>
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  const confirmBulkDelete = async () => {
+    await Promise.all([...selectedKeys].map((k) => deletePhoto(k)));
+    setSelectedKeys(new Set());
+    setSelectMode(false);
+    loadPhotos();
+  };
 
   /* ── Auth ── */
   const handleLoginSuccess = (credentialResponse) => {
@@ -538,9 +700,12 @@ export default function App() {
   };
 
 
-  const filtered = photos.filter((p) =>
-    p.filename.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = photos.filter((p) => {
+    if (!p.filename.toLowerCase().includes(search.toLowerCase())) return false;
+    if (mediaFilter === "photos") return !isVideo(p.filename);
+    if (mediaFilter === "videos") return isVideo(p.filename);
+    return true;
+  });
   const groups = groupByDate(filtered);
   const selectedIndex = selected ? filtered.findIndex((p) => p.key === selected.key) : -1;
   const goNext = () => selectedIndex < filtered.length - 1 && setSelected(filtered[selectedIndex + 1]);
@@ -591,7 +756,21 @@ export default function App() {
               <Icon name="view_list" />
             </button>
           </div>
-          <GooglePhotosImport onImportDone={loadPhotos} />
+          {activeTab === "photos" && (
+            <button
+              className={`upload-btn ${selectMode ? "select-mode-active" : ""}`}
+              onClick={toggleSelectMode}
+              title={selectMode ? "Cancel selection" : "Select multiple"}
+              style={selectMode ? { background: "var(--accent)", color: "#fff" } : {}}
+            >
+              <Icon name={selectMode ? "close" : "checklist"} />
+              {selectMode ? "Cancel" : "Select"}
+            </button>
+          )}
+          <GooglePhotosImport
+            onImportDone={loadPhotos}
+            existingFilenames={new Set(photos.map((p) => p.original_filename).filter(Boolean))}
+          />
           <button
             className="upload-btn"
             onClick={() => fileRef.current.click()}
@@ -619,13 +798,33 @@ export default function App() {
         {activeTab === "admin" && (
           <main className="grid-area"><AdminPanel user={user} /></main>
         )}
+        {activeTab === "trash" && (
+          <main className="grid-area"><RecycleBin /></main>
+        )}
         <main
           className={`grid-area ${dragOver ? "drag-over" : ""}`}
           style={activeTab !== "photos" ? { display: "none" } : {}}
+
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
         >
+          <div className="media-filter-bar">
+            {[
+              { id: "all",    icon: "perm_media",  label: "All"    },
+              { id: "photos", icon: "image",        label: "Photos" },
+              { id: "videos", icon: "videocam",     label: "Videos" },
+            ].map(({ id, icon, label }) => (
+              <button
+                key={id}
+                className={`media-filter-btn ${mediaFilter === id ? "active" : ""}`}
+                onClick={() => setMediaFilter(id)}
+              >
+                <Icon name={icon} />{label}
+              </button>
+            ))}
+          </div>
+
           {dragOver && (
             <div className="drop-overlay">
               <Icon name="cloud_upload" className="drop-icon" />
@@ -668,30 +867,47 @@ export default function App() {
                   {items.map((p) => (
                     <div
                       key={p.key}
-                      className={`photo-card ${isVideo(p.filename) ? "video-card" : ""}`}
-                      onClick={() => setSelected(p)}
+                      className={`photo-card ${isVideo(p.filename) ? "video-card" : ""} ${selectMode && selectedKeys.has(p.key) ? "selected" : ""}`}
+                      onClick={() => selectMode ? toggleKey(p.key) : setSelected(p)}
                     >
                       {isVideo(p.filename) ? (
                         <video src={p.url} muted playsInline preload="metadata" />
                       ) : (
                         <img src={p.url} alt={p.filename} loading="lazy" />
                       )}
-                      <div className="card-overlay">
-                        <button
-                          className="delete-btn"
-                          onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}
-                          title="Delete"
-                        >
-                          <Icon name="delete" />
-                        </button>
-                      </div>
+                      {selectMode ? (
+                        <div className="card-select-overlay">
+                          <div className={`select-check ${selectedKeys.has(p.key) ? "checked" : ""}`}>
+                            {selectedKeys.has(p.key) && <Icon name="check" />}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="card-overlay">
+                          <button
+                            className="delete-btn"
+                            onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}
+                            title="Delete"
+                          >
+                            <Icon name="delete" />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="photo-list">
                   {items.map((p) => (
-                    <div key={p.key} className="photo-list-row" onClick={() => setSelected(p)}>
+                    <div
+                      key={p.key}
+                      className={`photo-list-row ${selectMode && selectedKeys.has(p.key) ? "selected" : ""}`}
+                      onClick={() => selectMode ? toggleKey(p.key) : setSelected(p)}
+                    >
+                      {selectMode && (
+                        <div className={`select-check ${selectedKeys.has(p.key) ? "checked" : ""}`} style={{ marginRight: 10, flexShrink: 0 }}>
+                          {selectedKeys.has(p.key) && <Icon name="check" />}
+                        </div>
+                      )}
                       <div className="list-thumb-wrap">
                         {isVideo(p.filename) ? (
                           <video src={p.url} muted playsInline preload="metadata" className="list-thumb" />
@@ -712,13 +928,15 @@ export default function App() {
                           {(p.size / 1024).toFixed(1)} KB
                         </p>
                       </div>
-                      <button
-                        className="delete-btn list-delete-btn"
-                        onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}
-                        title="Delete"
-                      >
-                        <Icon name="delete" />
-                      </button>
+                      {!selectMode && (
+                        <button
+                          className="delete-btn list-delete-btn"
+                          onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}
+                          title="Delete"
+                        >
+                          <Icon name="delete" />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -727,7 +945,7 @@ export default function App() {
           ))}
         </main>
 
-        {!loading && groups.length > 1 && (
+        {!loading && groups.length > 1 && activeTab === "photos" && activeTab !== "trash" && (
           <div className="date-scrubber">
             {groups.map(([label]) => (
               <span key={label} className="scrubber-tick">{label.split(" ").slice(-1)[0]}</span>
@@ -735,6 +953,27 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* Bulk delete action bar */}
+      {selectMode && (
+        <div className="bulk-action-bar">
+          <span className="bulk-count">
+            {selectedKeys.size > 0 ? `${selectedKeys.size} selected` : "Tap items to select"}
+          </span>
+          <div className="bulk-actions">
+            <button className="bulk-select-all" onClick={() => setSelectedKeys(new Set(filtered.map((p) => p.key)))}>
+              <Icon name="select_all" /> Select all
+            </button>
+            <button
+              className="modal-confirm"
+              disabled={selectedKeys.size === 0}
+              onClick={confirmBulkDelete}
+            >
+              <Icon name="delete" /> Move {selectedKeys.size > 0 ? selectedKeys.size : ""} to Bin
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Lightbox */}
       {selected && (
@@ -754,7 +993,7 @@ export default function App() {
               </button>
             )}
             {isVideo(selected.filename) ? (
-              <video src={selected.url} controls autoPlay className="lightbox-video" />
+              <LightboxVideo src={selected.url} filename={selected.filename} videoKey={selected.key} />
             ) : (
               <img src={selected.url} alt={selected.filename} />
             )}

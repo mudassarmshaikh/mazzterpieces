@@ -1,5 +1,8 @@
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -84,6 +87,39 @@ ALLOWED_TYPES = {
     "video/x-matroska", "video/webm", "video/x-m4v",
 }
 
+FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
+VIDEO_TYPES = {
+    "video/mp4", "video/quicktime", "video/x-msvideo",
+    "video/x-matroska", "video/webm", "video/x-m4v",
+}
+
+
+def transcode_to_h264(data: bytes, input_ext: str = "mp4") -> bytes:
+    """Re-encode any video to H.264/AAC MP4 so it plays in all browsers."""
+    inp = tempfile.NamedTemporaryFile(suffix=f".{input_ext}", delete=False)
+    out_path = inp.name + "_h264.mp4"
+    try:
+        inp.write(data)
+        inp.close()
+        subprocess.run(
+            [
+                FFMPEG, "-y", "-i", inp.name,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                out_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(inp.name)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
 bearer = HTTPBearer()
 
 
@@ -106,6 +142,7 @@ class PhotoItem(BaseModel):
     key: str
     url: str
     filename: str
+    original_filename: str = ""
     size: int
     last_modified: str
     uploaded_by: str
@@ -235,14 +272,24 @@ def list_photos(user: UserInfo = Depends(verify_token)):
             Params={"Bucket": BUCKET_NAME, "Key": obj["Key"]},
             ExpiresIn=3600,
         )
+        # Read the uploader stored at upload time; fall back to current user for old photos
+        try:
+            head = s3.head_object(Bucket=BUCKET_NAME, Key=obj["Key"])
+            meta = head.get("Metadata", {})
+            uploader = meta.get("uploader-name") or user.name
+            original_filename = meta.get("original-filename", "")
+        except ClientError:
+            uploader = user.name
+            original_filename = ""
         photos.append(
             PhotoItem(
                 key=obj["Key"],
                 url=url,
                 filename=obj["Key"].split("/")[-1],
+                original_filename=original_filename,
                 size=obj["Size"],
                 last_modified=obj["LastModified"].isoformat(),
-                uploaded_by=user.name,
+                uploaded_by=uploader,
             )
         )
     return sorted(photos, key=lambda p: p.last_modified, reverse=True)
@@ -256,16 +303,31 @@ async def upload_photo(
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="File type not supported.")
 
-    ext = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
+    contents = await file.read()
+    content_type = file.content_type
+
+    if content_type in VIDEO_TYPES:
+        ext_in = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "mp4"
+        try:
+            contents = transcode_to_h264(contents, ext_in)
+            content_type = "video/mp4"
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=422, detail=f"Video transcoding failed: {e.stderr.decode()[-300:]}")
+
+    ext = "mp4" if content_type == "video/mp4" else (file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin")
     key = f"photos/{uuid.uuid4()}.{ext}"
 
     try:
-        contents = await file.read()
         s3.put_object(
             Bucket=BUCKET_NAME,
             Key=key,
             Body=contents,
-            ContentType=file.content_type,
+            ContentType=content_type,
+            Metadata={
+                "uploader-email": user.email,
+                "uploader-name": user.name,
+                "original-filename": file.filename,
+            },
         )
     except ClientError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -313,14 +375,32 @@ def import_google_photos(
             print(f"[import] download FAILED: {e}")
             skipped.append({"filename": item.filename, "reason": str(e)})
             continue
-        ext = item.filename.rsplit(".", 1)[-1] if "." in item.filename else "jpg"
+        body = resp.content
+        out_mime = mime
+        if mime.startswith("video/"):
+            ext_in = item.filename.rsplit(".", 1)[-1] if "." in item.filename else "mp4"
+            try:
+                body = transcode_to_h264(body, ext_in)
+                out_mime = "video/mp4"
+                print(f"[import] transcoded to H.264 size={len(body)}")
+            except subprocess.CalledProcessError as e:
+                print(f"[import] transcode failed: {e.stderr.decode()[-200:]}")
+                skipped.append({"filename": item.filename, "reason": "transcoding failed"})
+                continue
+
+        ext = "mp4" if out_mime == "video/mp4" else (item.filename.rsplit(".", 1)[-1] if "." in item.filename else "jpg")
         key = f"photos/{uuid.uuid4()}.{ext}"
         try:
             s3.put_object(
                 Bucket=BUCKET_NAME,
                 Key=key,
-                Body=resp.content,
-                ContentType=mime,
+                Body=body,
+                ContentType=out_mime,
+                Metadata={
+                    "uploader-email": user.email,
+                    "uploader-name": user.name,
+                    "original-filename": item.filename,
+                },
             )
             print(f"[import] S3 OK key={key!r}")
             imported.append({"key": key, "filename": item.filename})
@@ -331,12 +411,83 @@ def import_google_photos(
     return {"imported": len(imported), "items": imported, "skipped": skipped}
 
 
+@app.get("/download/{key:path}")
+def download_file(key: str, user: UserInfo = Depends(verify_token)):
+    """Return a presigned URL that forces browser download (Content-Disposition: attachment)."""
+    if not (key.startswith("photos/") or key.startswith("trash/")):
+        raise HTTPException(status_code=403, detail="Invalid key.")
+    filename = key.split("/")[-1]
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": BUCKET_NAME,
+            "Key": key,
+            "ResponseContentDisposition": f'attachment; filename="{filename}"',
+        },
+        ExpiresIn=300,
+    )
+    return {"url": url}
+
+
 @app.delete("/photos/{key:path}")
 def delete_photo(key: str, user: UserInfo = Depends(verify_token)):
+    """Move a photo to the recycle bin (trash/ prefix)."""
     if not key.startswith("photos/"):
+        raise HTTPException(status_code=403, detail="Invalid key.")
+    trash_key = "trash/" + key[len("photos/"):]
+    try:
+        s3.copy_object(
+            Bucket=BUCKET_NAME,
+            CopySource={"Bucket": BUCKET_NAME, "Key": key},
+            Key=trash_key,
+            MetadataDirective="COPY",
+        )
+        s3.delete_object(Bucket=BUCKET_NAME, Key=key)
+    except ClientError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"message": "Moved to recycle bin", "trash_key": trash_key}
+
+
+@app.get("/trash", response_model=List[PhotoItem])
+def list_trash(user: UserInfo = Depends(verify_token)):
+    """List items in the recycle bin."""
+    try:
+        response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="trash/")
+    except ClientError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    items = []
+    for obj in response.get("Contents", []):
+        if obj["Key"].endswith("/"):
+            continue
+        url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": BUCKET_NAME, "Key": obj["Key"]},
+            ExpiresIn=3600,
+        )
+        try:
+            head = s3.head_object(Bucket=BUCKET_NAME, Key=obj["Key"])
+            uploader = head.get("Metadata", {}).get("uploader-name", "Unknown")
+        except ClientError:
+            uploader = "Unknown"
+        items.append(PhotoItem(
+            key=obj["Key"],
+            url=url,
+            filename=obj["Key"].split("/")[-1],
+            size=obj["Size"],
+            last_modified=obj["LastModified"].isoformat(),
+            uploaded_by=uploader,
+        ))
+    return sorted(items, key=lambda p: p.last_modified, reverse=True)
+
+
+@app.delete("/trash/{key:path}")
+def permanently_delete(key: str, user: UserInfo = Depends(verify_token)):
+    """Permanently delete an item from the recycle bin."""
+    if not key.startswith("trash/"):
         raise HTTPException(status_code=403, detail="Invalid key.")
     try:
         s3.delete_object(Bucket=BUCKET_NAME, Key=key)
     except ClientError as e:
         raise HTTPException(status_code=500, detail=str(e))
-    return {"message": "Deleted successfully"}
+    return {"message": "Permanently deleted"}
