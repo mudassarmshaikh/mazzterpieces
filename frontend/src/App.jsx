@@ -1179,10 +1179,20 @@ export default function App() {
                         <div className="card-overlay">
                           <button
                             className="delete-btn"
-                            onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}
-                            title="Delete"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                const url = await getDownloadUrl(p.key);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                              } catch { alert("Download failed."); }
+                            }}
+                            title="Download"
                           >
-                            <Icon name="delete" />
+                            <Icon name="download" />
                           </button>
                         </div>
                       )}
