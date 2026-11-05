@@ -37,5 +37,14 @@ export const importGooglePhotos = (items) =>
   api.post("/google-photos/import", items).then((r) => r.data);
 
 export const fetchAllowlist = () => api.get("/admin/allowlist").then((r) => r.data);
-export const addToAllowlist = (email) => api.post(`/admin/allowlist/${encodeURIComponent(email)}`).then((r) => r.data);
+export const addToAllowlist = (email, grant) =>
+  api.post(`/admin/allowlist/${encodeURIComponent(email)}`, grant).then((r) => r.data);
 export const removeFromAllowlist = (email) => api.delete(`/admin/allowlist/${encodeURIComponent(email)}`).then((r) => r.data);
+
+export const requestAccess = (message = "") =>
+  api.post("/auth/request-access", { message }).then((r) => r.data);
+export const fetchAccessRequests = () => api.get("/admin/access-requests").then((r) => r.data);
+export const approveAccessRequest = (email, grant) =>
+  api.post(`/admin/access-requests/${encodeURIComponent(email)}/approve`, grant).then((r) => r.data);
+export const denyAccessRequest = (email) =>
+  api.post(`/admin/access-requests/${encodeURIComponent(email)}/deny`).then((r) => r.data);

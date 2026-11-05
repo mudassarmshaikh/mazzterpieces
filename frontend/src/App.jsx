@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleLogin, googleLogout, useGoogleLogin } from "@react-oauth/google";
-import { addToAllowlist, deletePhoto, fetchAllowlist, fetchLogins, fetchPhotos, fetchTrash, getDownloadUrl, importGooglePhotos, permanentlyDelete, recordLogin, removeFromAllowlist, uploadPhoto } from "./api";
+import { addToAllowlist, approveAccessRequest, deletePhoto, denyAccessRequest, fetchAccessRequests, fetchAllowlist, fetchLogins, fetchPhotos, fetchTrash, getDownloadUrl, importGooglePhotos, permanentlyDelete, recordLogin, removeFromAllowlist, requestAccess, uploadPhoto } from "./api";
 import "./App.css";
 
 const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
@@ -55,6 +55,83 @@ function LoginScreen({ onSuccess }) {
           <Icon name="lock" className="login-lock-icon" />
           Your photos are private and only visible to you.
         </p>
+      </div>
+    </div>
+  );
+}
+
+/* ── Access denied / request screen ── */
+function AccessDeniedScreen({ user, onSignOut }) {
+  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const [statusMsg, setStatusMsg] = useState("");
+
+  const handleRequest = async () => {
+    setStatus("sending");
+    try {
+      const res = await requestAccess(message);
+      setStatusMsg(res.message);
+      setStatus("sent");
+    } catch (e) {
+      setStatusMsg(e.response?.data?.detail?.message ?? e.response?.data?.detail ?? e.message);
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div className="login-screen">
+      <div className="login-card" style={{ maxWidth: 420 }}>
+        <div className="login-logo">
+          <img src="/logo.png" alt="MAZZterpix" className="logo-img" />
+          <span className="logo-text">MAZZterpix</span>
+        </div>
+        <p className="login-tagline" style={{ color: "var(--text-dim)" }}>
+          Signed in as <strong>{user?.email}</strong>
+        </p>
+        <div className="login-divider" />
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <Icon name="lock" style={{ fontSize: 36, color: "var(--accent)" }} />
+          <p style={{ marginTop: 8, fontWeight: 600 }}>Access Restricted</p>
+          <p style={{ fontSize: 13, color: "var(--text-dim)", marginTop: 4 }}>
+            Your account hasn't been approved yet. Request access below and the admin will review it.
+          </p>
+        </div>
+        {status === "sent" ? (
+          <p style={{ textAlign: "center", color: "#34d399", fontSize: 14 }}>
+            <Icon name="check_circle" style={{ verticalAlign: "middle", marginRight: 4 }} />
+            {statusMsg}
+          </p>
+        ) : (
+          <>
+            <textarea
+              className="access-input"
+              placeholder="Optional message to the admin…"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={3}
+              style={{ width: "100%", resize: "vertical", marginBottom: 8, boxSizing: "border-box" }}
+            />
+            {status === "error" && (
+              <p style={{ color: "#f87171", fontSize: 13, marginBottom: 8 }}>{statusMsg}</p>
+            )}
+            <button
+              className="upload-btn"
+              style={{ width: "100%", justifyContent: "center" }}
+              onClick={handleRequest}
+              disabled={status === "sending"}
+            >
+              <Icon name="send" /> {status === "sending" ? "Sending…" : "Request Access"}
+            </button>
+          </>
+        )}
+        <div className="login-divider" style={{ margin: "16px 0 12px" }} />
+        <button
+          className="access-remove-btn"
+          style={{ width: "100%", justifyContent: "center", display: "flex", gap: 6, padding: "8px 0" }}
+          onClick={onSignOut}
+        >
+          <Icon name="logout" /> Sign out
+        </button>
       </div>
     </div>
   );
@@ -127,19 +204,39 @@ function NavRail({ photos, activeTab, onTabChange }) {
   );
 }
 
+const SCOPE_LABELS = { all: "All media", self: "Own uploads only" };
+const PERM_LABELS = { view: "View", upload: "Upload & Delete" };
+
 /* ── Admin panel ── */
 function AdminPanel({ user }) {
   const [adminTab, setAdminTab] = useState("logins");
+
+  // Login history
   const [logins, setLogins] = useState([]);
   const [loginsLoading, setLoginsLoading] = useState(true);
-  const [allowlist, setAllowlist] = useState({ restricted: false, emails: [], owner: "" });
+
+  // Permissions / allowlist
+  const [allowlist, setAllowlist] = useState({ owner: "", users: [] });
   const [accessLoading, setAccessLoading] = useState(true);
   const [newEmail, setNewEmail] = useState("");
+  const [newScope, setNewScope] = useState("all");
+  const [newPerms, setNewPerms] = useState(["view", "upload"]);
   const [saving, setSaving] = useState(false);
+
+  // Access requests
+  const [accessReqs, setAccessReqs] = useState([]);
+  const [reqsLoading, setReqsLoading] = useState(true);
+
+  const reload = () => {
+    setAccessLoading(true);
+    setReqsLoading(true);
+    fetchAllowlist().then(setAllowlist).catch(() => {}).finally(() => setAccessLoading(false));
+    fetchAccessRequests().then(setAccessReqs).catch(() => {}).finally(() => setReqsLoading(false));
+  };
 
   useEffect(() => {
     fetchLogins().then(setLogins).catch(() => {}).finally(() => setLoginsLoading(false));
-    fetchAllowlist().then(setAllowlist).catch(() => {}).finally(() => setAccessLoading(false));
+    reload();
   }, []);
 
   const handleAdd = async () => {
@@ -147,9 +244,9 @@ function AdminPanel({ user }) {
     if (!email) return;
     setSaving(true);
     try {
-      const res = await addToAllowlist(email);
-      setAllowlist((a) => ({ ...a, restricted: true, emails: res.emails }));
+      await addToAllowlist(email, { media_scope: newScope, permissions: newPerms });
       setNewEmail("");
+      reload();
     } catch (e) {
       alert(e.response?.data?.detail ?? e.message);
     } finally { setSaving(false); }
@@ -158,14 +255,46 @@ function AdminPanel({ user }) {
   const handleRemove = async (email) => {
     setSaving(true);
     try {
-      const res = await removeFromAllowlist(email);
-      setAllowlist((a) => ({ ...a, emails: res.emails }));
+      await removeFromAllowlist(email);
+      reload();
     } catch (e) {
-      alert(e.response?.data?.detail ?? e.message);
+      alert(e.response?.data?.detail?.message ?? e.response?.data?.detail ?? e.message);
+    } finally { setSaving(false); }
+  };
+
+  const handleUpdateGrant = async (email, scope, perms) => {
+    setSaving(true);
+    try {
+      await addToAllowlist(email, { media_scope: scope, permissions: perms });
+      reload();
+    } catch (e) {
+      alert(e.response?.data?.detail?.message ?? e.response?.data?.detail ?? e.message);
+    } finally { setSaving(false); }
+  };
+
+  const handleApprove = async (email, grant) => {
+    setSaving(true);
+    try {
+      await approveAccessRequest(email, grant);
+      reload();
+    } catch (e) {
+      alert(e.response?.data?.detail?.message ?? e.response?.data?.detail ?? e.message);
+    } finally { setSaving(false); }
+  };
+
+  const handleDeny = async (email) => {
+    setSaving(true);
+    try {
+      await denyAccessRequest(email);
+      reload();
+    } catch (e) {
+      alert(e.response?.data?.detail?.message ?? e.response?.data?.detail ?? e.message);
     } finally { setSaving(false); }
   };
 
   const isOwner = user?.email === allowlist.owner;
+  const restricted = allowlist.users.length > 0;
+  const pendingReqs = accessReqs.filter((r) => r.status === "pending");
 
   return (
     <div className="admin-panel">
@@ -176,8 +305,19 @@ function AdminPanel({ user }) {
         <button className={`admin-tab-btn ${adminTab === "access" ? "active" : ""}`} onClick={() => setAdminTab("access")}>
           <Icon name="lock" /> Access Control
         </button>
+        {isOwner && (
+          <button className={`admin-tab-btn ${adminTab === "requests" ? "active" : ""}`} onClick={() => setAdminTab("requests")}>
+            <Icon name="pending" /> Access Requests
+            {pendingReqs.length > 0 && (
+              <span style={{ marginLeft: 6, background: "var(--accent)", color: "#fff", borderRadius: 10, padding: "1px 7px", fontSize: 11 }}>
+                {pendingReqs.length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
+      {/* ── Login history tab ── */}
       {adminTab === "logins" && (
         <>
           {loginsLoading
@@ -207,57 +347,189 @@ function AdminPanel({ user }) {
         </>
       )}
 
+      {/* ── Access control tab ── */}
       {adminTab === "access" && (
         <div className="access-panel">
-          <div className={`access-status ${allowlist.restricted ? "restricted" : "open"}`}>
-            <Icon name={allowlist.restricted ? "lock" : "lock_open"} />
-            {allowlist.restricted
-              ? `Restricted — only ${allowlist.emails.length} approved email${allowlist.emails.length !== 1 ? "s" : ""} can access`
+          <div className={`access-status ${restricted ? "restricted" : "open"}`}>
+            <Icon name={restricted ? "lock" : "lock_open"} />
+            {restricted
+              ? `Restricted — ${allowlist.users.length} approved user${allowlist.users.length !== 1 ? "s" : ""}`
               : "Open — anyone with a Google account can access"}
           </div>
 
           {isOwner && (
-            <div className="access-add-row">
-              <input
-                className="access-input"
-                type="email"
-                placeholder="Add email address…"
-                value={newEmail}
-                onChange={(e) => setNewEmail(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-              />
-              <button className="upload-btn" onClick={handleAdd} disabled={saving || !newEmail.trim()}>
-                <Icon name="add" /> Add
-              </button>
+            <div style={{ marginTop: 12 }}>
+              <div className="access-add-row" style={{ flexWrap: "wrap", gap: 8 }}>
+                <input
+                  className="access-input"
+                  type="email"
+                  placeholder="Email address…"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                  style={{ flex: "1 1 200px" }}
+                />
+                <select
+                  className="access-input"
+                  value={newScope}
+                  onChange={(e) => setNewScope(e.target.value)}
+                  style={{ flex: "0 1 160px" }}
+                >
+                  <option value="all">All media</option>
+                  <option value="self">Own uploads only</option>
+                </select>
+                <select
+                  className="access-input"
+                  value={newPerms.includes("upload") ? "view_upload" : "view"}
+                  onChange={(e) => setNewPerms(e.target.value === "view_upload" ? ["view", "upload"] : ["view"])}
+                  style={{ flex: "0 1 160px" }}
+                >
+                  <option value="view">View only</option>
+                  <option value="view_upload">View + Upload</option>
+                </select>
+                <button className="upload-btn" onClick={handleAdd} disabled={saving || !newEmail.trim()}>
+                  <Icon name="add" /> Grant
+                </button>
+              </div>
             </div>
           )}
 
           {accessLoading
             ? <div className="status-center"><div className="spinner" /></div>
-            : allowlist.emails.length === 0
-              ? <p className="admin-empty" style={{ marginTop: 12 }}>No emails added yet — app is open to all.</p>
+            : allowlist.users.length === 0
+              ? <p className="admin-empty" style={{ marginTop: 12 }}>No users granted yet — app is open to all.</p>
               : (
                 <div className="admin-table-wrap" style={{ marginTop: 12 }}>
                   <table className="admin-table">
-                    <thead><tr><th>Email</th><th>Role</th>{isOwner && <th></th>}</tr></thead>
+                    <thead>
+                      <tr>
+                        <th>Email</th>
+                        <th>Media scope</th>
+                        <th>Permissions</th>
+                        {isOwner && <th></th>}
+                      </tr>
+                    </thead>
                     <tbody>
-                      {allowlist.emails.map((email) => (
-                        <tr key={email}>
-                          <td className="admin-email" style={{ color: "var(--text-bright)" }}>{email}</td>
+                      {allowlist.users.map((u) => (
+                        <tr key={u.email}>
+                          <td className="admin-email" style={{ color: "var(--text-bright)" }}>{u.email}</td>
                           <td>
-                            <span className={`access-role ${email === allowlist.owner ? "owner" : "user"}`}>
-                              {email === allowlist.owner ? "Owner" : "User"}
-                            </span>
+                            {isOwner ? (
+                              <select
+                                className="access-input"
+                                value={u.media_scope ?? "all"}
+                                onChange={(e) => handleUpdateGrant(u.email, e.target.value, u.permissions ?? ["view"])}
+                                disabled={saving}
+                                style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                              >
+                                <option value="all">All media</option>
+                                <option value="self">Own uploads only</option>
+                              </select>
+                            ) : (
+                              <span className="access-role user">{SCOPE_LABELS[u.media_scope] ?? u.media_scope}</span>
+                            )}
+                          </td>
+                          <td>
+                            {isOwner ? (
+                              <select
+                                className="access-input"
+                                value={(u.permissions ?? []).includes("upload") ? "view_upload" : "view"}
+                                onChange={(e) => handleUpdateGrant(
+                                  u.email,
+                                  u.media_scope ?? "all",
+                                  e.target.value === "view_upload" ? ["view", "upload"] : ["view"]
+                                )}
+                                disabled={saving}
+                                style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                              >
+                                <option value="view">View only</option>
+                                <option value="view_upload">View + Upload</option>
+                              </select>
+                            ) : (
+                              (u.permissions ?? []).map((p) => (
+                                <span key={p} className="access-role user" style={{ marginRight: 4 }}>{PERM_LABELS[p] ?? p}</span>
+                              ))
+                            )}
                           </td>
                           {isOwner && (
                             <td>
-                              {email !== allowlist.owner && (
-                                <button className="access-remove-btn" onClick={() => handleRemove(email)} disabled={saving}>
-                                  <Icon name="delete" />
-                                </button>
-                              )}
+                              <button className="access-remove-btn" onClick={() => handleRemove(u.email)} disabled={saving}>
+                                <Icon name="delete" />
+                              </button>
                             </td>
                           )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+        </div>
+      )}
+
+      {/* ── Access requests tab ── */}
+      {adminTab === "requests" && (
+        <div className="access-panel">
+          {reqsLoading
+            ? <div className="status-center"><div className="spinner" /></div>
+            : accessReqs.length === 0
+              ? <p className="admin-empty">No access requests yet.</p>
+              : (
+                <div className="admin-table-wrap">
+                  <table className="admin-table">
+                    <thead>
+                      <tr>
+                        <th></th><th>Name</th><th>Email</th><th>Message</th><th>Status</th>
+                        {isOwner && <th>Actions</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {accessReqs.map((req) => (
+                        <tr key={req.email + req.requested_at}>
+                          <td>
+                            {req.picture
+                              ? <img src={req.picture} alt={req.name} className="admin-avatar" referrerPolicy="no-referrer" />
+                              : <div className="admin-avatar-fallback">{req.name?.[0]?.toUpperCase()}</div>}
+                          </td>
+                          <td className="admin-name">{req.name}</td>
+                          <td className="admin-email">{req.email}</td>
+                          <td className="admin-email" style={{ maxWidth: 200, whiteSpace: "normal" }}>{req.message || "—"}</td>
+                          <td>
+                            <span className={`access-role ${req.status === "approved" ? "owner" : req.status === "denied" ? "" : "user"}`}
+                              style={req.status === "denied" ? { opacity: 0.5 } : {}}>
+                              {req.status}
+                            </span>
+                          </td>
+                          {isOwner && req.status === "pending" && (
+                            <td className="admin-actions">
+                              <div style={{ display: "flex", gap: 6 }}>
+                                <button
+                                  className="upload-btn"
+                                  style={{ fontSize: 12, padding: "4px 10px" }}
+                                  disabled={saving}
+                                  onClick={() => handleApprove(req.email, { media_scope: "all", permissions: ["view", "upload"] })}
+                                >
+                                  <Icon name="check" /> Approve (full)
+                                </button>
+                                <button
+                                  className="upload-btn"
+                                  style={{ fontSize: 12, padding: "4px 10px", background: "var(--surface-2)" }}
+                                  disabled={saving}
+                                  onClick={() => handleApprove(req.email, { media_scope: "self", permissions: ["view"] })}
+                                >
+                                  <Icon name="visibility" /> View own
+                                </button>
+                                <button
+                                  className="access-remove-btn"
+                                  disabled={saving}
+                                  onClick={() => handleDeny(req.email)}
+                                >
+                                  <Icon name="close" />
+                                </button>
+                              </div>
+                            </td>
+                          )}
+                          {isOwner && req.status !== "pending" && <td />}
                         </tr>
                       ))}
                     </tbody>
@@ -614,6 +886,7 @@ export default function App() {
   const [mediaFilter, setMediaFilter] = useState("all"); // "all" | "photos" | "videos"
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
+  const [accessDenied, setAccessDenied] = useState(false);
   const fileRef = useRef();
 
   const toggleSelectMode = () => {
@@ -658,14 +931,22 @@ export default function App() {
     localStorage.removeItem("gid_user");
     setUser(null);
     setPhotos([]);
+    setAccessDenied(false);
   };
 
   /* ── Photos ── */
   const loadPhotos = useCallback(async () => {
     setLoading(true);
-    try { setPhotos(await fetchPhotos()); }
-    catch { alert("Could not load photos. Check that the backend is running."); }
-    finally { setLoading(false); }
+    try {
+      setPhotos(await fetchPhotos());
+      setAccessDenied(false);
+    } catch (e) {
+      if (e.response?.status === 403 && e.response?.data?.detail?.can_request_access) {
+        setAccessDenied(true);
+      } else {
+        alert("Could not load photos. Check that the backend is running.");
+      }
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
@@ -713,6 +994,7 @@ export default function App() {
 
   /* ── Not signed in ── */
   if (!user) return <LoginScreen onSuccess={handleLoginSuccess} />;
+  if (accessDenied) return <AccessDeniedScreen user={user} onSignOut={handleSignOut} />;
 
   return (
     <div className="app">
