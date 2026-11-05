@@ -451,6 +451,7 @@ function AdminPanel({ user }) {
                               >
                                 <option value="view">View only</option>
                                 <option value="view_upload">View + Upload</option>
+                                <option value="view_upload_delete">View + Upload + Delete</option>
                               </select>
                             ) : (
                               (u.permissions ?? []).map((p) => (
