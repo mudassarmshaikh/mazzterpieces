@@ -11,6 +11,7 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+export const fetchMe = () => api.get("/auth/me").then((r) => r.data);
 export const fetchPhotos = () => api.get("/photos").then((r) => r.data);
 
 export const uploadPhoto = (file, onProgress) => {

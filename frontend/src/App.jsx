@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GoogleLogin, googleLogout, useGoogleLogin } from "@react-oauth/google";
-import { addToAllowlist, approveAccessRequest, deletePhoto, denyAccessRequest, fetchAccessRequests, fetchAllowlist, fetchLogins, fetchPhotos, fetchTrash, getDownloadUrl, importGooglePhotos, permanentlyDelete, recordLogin, removeFromAllowlist, requestAccess, uploadPhoto } from "./api";
+import { addToAllowlist, approveAccessRequest, deletePhoto, denyAccessRequest, fetchAccessRequests, fetchAllowlist, fetchLogins, fetchMe, fetchPhotos, fetchTrash, getDownloadUrl, importGooglePhotos, permanentlyDelete, recordLogin, removeFromAllowlist, requestAccess, uploadPhoto } from "./api";
 import "./App.css";
 
 const VIDEO_EXTS = new Set(["mp4", "mov", "avi", "mkv", "webm", "m4v"]);
@@ -147,7 +147,7 @@ function fmtBytes(bytes) {
 const BAR_COLORS = ["#7c6cf8","#f87171","#34d399","#fbbf24","#60a5fa","#f472b6","#a78bfa"];
 
 /* ── Nav rail ── */
-function NavRail({ photos, activeTab, onTabChange }) {
+function NavRail({ photos, activeTab, onTabChange, isOwner }) {
   const topItems = [
     { id: "photos", icon: "perm_media", label: "Media" },
     { id: "admin", icon: "admin_panel_settings", label: "Admin" },
@@ -174,12 +174,14 @@ function NavRail({ photos, activeTab, onTabChange }) {
           </button>
         ))}
         <div className="rail-spacer" />
-        <button
-          className={`rail-item rail-item-trash ${activeTab === "trash" ? "active" : ""}`}
-          onClick={() => onTabChange("trash")}
-        >
-          <Icon name="delete" /><span>Recycle Bin</span>
-        </button>
+        {isOwner && (
+          <button
+            className={`rail-item rail-item-trash ${activeTab === "trash" ? "active" : ""}`}
+            onClick={() => onTabChange("trash")}
+          >
+            <Icon name="delete" /><span>Recycle Bin</span>
+          </button>
+        )}
       </nav>
       <div className="rail-storage">
         <p className="storage-label">Storage by user</p>
@@ -205,7 +207,7 @@ function NavRail({ photos, activeTab, onTabChange }) {
 }
 
 const SCOPE_LABELS = { all: "All media", self: "Own uploads only" };
-const PERM_LABELS = { view: "View", upload: "Upload & Delete" };
+const PERM_LABELS = { view: "View", upload: "Upload", delete: "Delete" };
 
 /* ── Admin panel ── */
 function AdminPanel({ user }) {
@@ -380,12 +382,16 @@ function AdminPanel({ user }) {
                 </select>
                 <select
                   className="access-input"
-                  value={newPerms.includes("upload") ? "view_upload" : "view"}
-                  onChange={(e) => setNewPerms(e.target.value === "view_upload" ? ["view", "upload"] : ["view"])}
+                  value={newPerms.includes("delete") ? "view_upload_delete" : newPerms.includes("upload") ? "view_upload" : "view"}
+                  onChange={(e) => setNewPerms(
+                    e.target.value === "view_upload_delete" ? ["view", "upload", "delete"] :
+                    e.target.value === "view_upload" ? ["view", "upload"] : ["view"]
+                  )}
                   style={{ flex: "0 1 160px" }}
                 >
                   <option value="view">View only</option>
                   <option value="view_upload">View + Upload</option>
+                  <option value="view_upload_delete">View + Upload + Delete</option>
                 </select>
                 <button className="upload-btn" onClick={handleAdd} disabled={saving || !newEmail.trim()}>
                   <Icon name="add" /> Grant
@@ -433,10 +439,11 @@ function AdminPanel({ user }) {
                             {isOwner ? (
                               <select
                                 className="access-input"
-                                value={(u.permissions ?? []).includes("upload") ? "view_upload" : "view"}
+                                value={(u.permissions ?? []).includes("delete") ? "view_upload_delete" : (u.permissions ?? []).includes("upload") ? "view_upload" : "view"}
                                 onChange={(e) => handleUpdateGrant(
                                   u.email,
                                   u.media_scope ?? "all",
+                                  e.target.value === "view_upload_delete" ? ["view", "upload", "delete"] :
                                   e.target.value === "view_upload" ? ["view", "upload"] : ["view"]
                                 )}
                                 disabled={saving}
@@ -507,7 +514,7 @@ function AdminPanel({ user }) {
                                   className="upload-btn"
                                   style={{ fontSize: 12, padding: "4px 10px" }}
                                   disabled={saving}
-                                  onClick={() => handleApprove(req.email, { media_scope: "all", permissions: ["view", "upload"] })}
+                                  onClick={() => handleApprove(req.email, { media_scope: "all", permissions: ["view", "upload", "delete"] })}
                                 >
                                   <Icon name="check" /> Approve (full)
                                 </button>
@@ -887,6 +894,7 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState(new Set());
   const [accessDenied, setAccessDenied] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
   const fileRef = useRef();
 
   const toggleSelectMode = () => {
@@ -932,6 +940,7 @@ export default function App() {
     setUser(null);
     setPhotos([]);
     setAccessDenied(false);
+    setIsOwner(false);
   };
 
   /* ── Photos ── */
@@ -950,7 +959,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user) loadPhotos();
+    if (user) {
+      fetchMe().then((info) => setIsOwner(info.is_owner ?? false)).catch(() => {});
+      loadPhotos();
+    }
   }, [user, loadPhotos]);
 
   const handleFiles = async (files) => {
@@ -1075,7 +1087,7 @@ export default function App() {
       </header>
 
       <div className="body-row">
-        <NavRail photos={photos} activeTab={activeTab} onTabChange={setActiveTab} />
+        <NavRail photos={photos} activeTab={activeTab} onTabChange={setActiveTab} isOwner={isOwner} />
 
         {activeTab === "admin" && (
           <main className="grid-area"><AdminPanel user={user} /></main>

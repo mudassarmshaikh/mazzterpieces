@@ -165,8 +165,9 @@ class UserInfo(BaseModel):
     name: str
     picture: str
     # Populated by verify_token from the permissions store
-    media_scope: str = "all"             # "all" = every user's media, "self" = own uploads only
-    permissions: List[str] = ["view", "upload"]  # granted permission tokens
+    media_scope: str = "all"                       # "all" = every user's media, "self" = own uploads only
+    permissions: List[str] = ["view", "upload", "delete"]  # granted permission tokens
+    is_owner: bool = False
 
 
 class LoginEvent(BaseModel):
@@ -203,7 +204,7 @@ class AccessRequestBody(BaseModel):
 
 class GrantPermissionRequest(BaseModel):
     media_scope: str = "all"           # "all" or "self"
-    permissions: List[str] = ["view"]  # ["view"] and/or ["view","upload"]
+    permissions: List[str] = ["view"]  # "view" | "view"+"upload" | "view"+"upload"+"delete"
 
 
 # ---------- Auth dependencies ----------
@@ -229,7 +230,8 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(bearer)) ->
 
     if user.email == OWNER_EMAIL:
         user.media_scope = "all"
-        user.permissions = ["view", "upload"]
+        user.permissions = ["view", "upload", "delete"]
+        user.is_owner = True
         return user
 
     perms = _read_permissions()
@@ -636,8 +638,8 @@ def download_file(key: str, user: UserInfo = Depends(verify_token)):
 @app.delete("/photos/{key:path}")
 def delete_photo(key: str, user: UserInfo = Depends(verify_token)):
     """Move a photo to the recycle bin (trash/ prefix)."""
-    if "upload" not in user.permissions:
-        raise HTTPException(status_code=403, detail="You do not have permission to delete.")
+    if "delete" not in user.permissions:
+        raise HTTPException(status_code=403, detail="You do not have delete permission.")
     if not key.startswith("photos/"):
         raise HTTPException(status_code=403, detail="Invalid key.")
     trash_key = "trash/" + key[len("photos/"):]
@@ -656,7 +658,9 @@ def delete_photo(key: str, user: UserInfo = Depends(verify_token)):
 
 @app.get("/trash", response_model=List[PhotoItem])
 def list_trash(user: UserInfo = Depends(verify_token)):
-    """List items in the recycle bin."""
+    """List items in the recycle bin (admin / owner only)."""
+    if not user.is_owner:
+        raise HTTPException(status_code=403, detail="Only the admin can access the recycle bin.")
     try:
         response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix="trash/")
     except ClientError as e:
@@ -697,9 +701,9 @@ def list_trash(user: UserInfo = Depends(verify_token)):
 
 @app.delete("/trash/{key:path}")
 def permanently_delete(key: str, user: UserInfo = Depends(verify_token)):
-    """Permanently delete an item from the recycle bin."""
-    if "upload" not in user.permissions:
-        raise HTTPException(status_code=403, detail="You do not have permission to delete.")
+    """Permanently delete an item from the recycle bin (admin / owner only)."""
+    if not user.is_owner:
+        raise HTTPException(status_code=403, detail="Only the admin can permanently delete items.")
     if not key.startswith("trash/"):
         raise HTTPException(status_code=403, detail="Invalid key.")
     try:
